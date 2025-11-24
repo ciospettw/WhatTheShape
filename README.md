@@ -1,0 +1,114 @@
+# GTFS Shapes Fixer
+
+This tool rebuilds `shapes.txt` for a GTFS feed by map-matching trip stops to OpenStreetMap (OSM) data. It supports both road (bus) and rail (train, tram, subway) networks.
+
+## Features
+
+-   **Automatic Mode Detection**: Infers whether a route is "road" or "rail" based on `route_type` and keywords in route names.
+-   **Hybrid Graph Building**: Builds separate routing graphs for road and rail networks from a single OSM PBF file.
+-   **Map Matching**: Uses a Hidden Markov Model (HMM) approach (via `networkx` shortest paths between candidates) to find the most likely path through the street/rail network. This guarantees the shapes will find a way to get stop-to-stop, but the real shape can obviously vary if that trip actually takes a path between stops which is not the shortest.
+-   **Shape Simplification**: Simplifies the resulting polylines to reduce file size while maintaining accuracy.
+-   **Deduplication**: Assigns shared `shape_id`s to trips with identical geometries to keep `shapes.txt` compact.
+-   **Visualizer**: Includes a web-based viewer to watch the graph building and shape generation process in real-time.
+
+## Prerequisites
+
+-   Python 3.9+
+-   A valid GTFS feed (unpacked directory).
+-   An OpenStreetMap PBF (OSM.PBF) file covering the region of the GTFS feed.
+
+## Installation
+
+1.  Clone the repository.
+2.  Create a virtual environment:
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate  # Linux/Mac
+    .venv\Scripts\activate     # Windows
+    ```
+3.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *Note: You may need to install `osmium` dependencies separately if the pip install fails (e.g., `libosmium` on Linux).*
+
+## Usage
+
+### Basic Usage
+
+To rebuild shapes for a GTFS feed using an OSM PBF file:
+
+```bash
+python main.py --gtfs /path/to/gtfs_dir --osm /path/to/region.osm.pbf
+```
+
+This will:
+1.  Load the GTFS data.
+2.  Compute the bounding box of all stops.
+3.  Build road and/or rail graphs from the PBF file within that bounding box.
+4.  Process every trip in `trips.txt`, generating a shape.
+5.  Write a new `shapes.txt` to the GTFS directory.
+6.  Update `trips.txt` with the new `shape_id`s (backing up the original as `trips.txt.bak`).
+7.  Generate a `shape_id_map.csv` in the GTFS directory, mapping each trip to its assigned shape ID.
+
+### Command Line Arguments
+
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `--gtfs` | Path to the unpacked GTFS directory. | `trgtfs` |
+| `--osm` | Path to the OSM PBF file. | `lazio.osm.pbf` |
+| `--modes` | Which graphs to build: `road`, `rail`, or `both`. | `both` |
+| `--dry-run` | Run without writing changes to disk. | `False` |
+| `--max-trips` | Limit the number of trips to process (for testing). | `None` |
+| `--tolerance-road` | Simplification tolerance (meters) for road shapes. | `5.0` |
+| `--tolerance-rail` | Simplification tolerance (meters) for rail shapes. | `3.0` |
+| `--with-viewer` | Launch the web visualizer. | `False` |
+
+### Selective Graph Building
+
+If you only want to process rail trips (e.g., for a train-only feed or to save time):
+
+```bash
+python main.py --gtfs ./my_gtfs --osm ./italy.osm.pbf --modes rail
+```
+
+Any trips identified as "road" (bus) will be skipped.
+
+### Visualizer
+
+To watch the process in real-time:
+
+```bash
+python main.py --with-viewer
+```
+
+This will open a web browser at `http://127.0.0.1:1890`. Click "Build Graphs (Live View)" to start.
+
+**Note**: The visualizer is a basic tool for debugging and watching progress. It is not highly optimized and may struggle with very large datasets. It is "not one of the bests", but it gets the job done for monitoring.
+
+## Important Notes & Limitations
+
+1.  **OSM Coverage**: You **MUST** provide an OSM PBF that covers the **entire** area of your GTFS feed. If the PBF is too small, stops outside the area will not be matched, and trips may fail or result in straight lines.
+    -   *Tip*: Download a larger region (e.g., the whole country or municipality) from [Geofabrik](https://download.geofabrik.de/). The script automatically filters the graph to the bounding box of your stops, so using a large PBF is efficient.
+
+2.  **Graph Connectivity**: The script assumes the OSM network is connected. If stops are far from any road/rail (e.g., bad stop coordinates or missing OSM data), the map matching may fail or produce straight lines between those stops.
+
+3.  **Performance**:
+    -   Building graphs from large PBFs can take time and memory (RAM), and may as well cause CPU strain.
+    -   Processing thousands of trips can take a while, especially if they are road ones. Use `--max-trips` to test on a subset first.
+
+4.  **Route Mode Inference**: The script guesses if a route is bus or rail based on `route_type` and name keywords. If your GTFS has unusual `route_type` values, you might need to adjust the `route_mode` function in the script or edit your GTFS to use standard values for `route_type` in trips.txt (E.G. 2= Rail, 3=Bus)
+
+## Troubleshooting
+
+-   **"ModuleNotFoundError: No module named 'pandas'"**: Ensure you have activated your virtual environment and installed requirements.
+-   **Straight lines in output**: This usually means the map matching failed for those segments. Check if:
+    -   The OSM PBF covers that area.
+    -   The stops are close enough to roads/rails.
+    -   The correct `--modes` were enabled.
+-   **Script crashes with MemoryError**: Try using a smaller PBF (cropped to your region) or a machine with more RAM. Unfortunately, for big areas such as entire regions or even entire nations, not much can be done to not make your computer crash at build time.
+
+## License
+
+CC-BY-NC-SA
+@Ciospettw

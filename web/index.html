@@ -1,0 +1,392 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>GTFS Shapes Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <style>
+      html, body, #map { height: 100%; margin: 0; }
+      #toolbar { 
+        position:absolute; top:8px; left:8px; z-index:1000; 
+        background:white; padding:8px; border-radius:6px; 
+        box-shadow:0 2px 8px rgba(0,0,0,0.15); 
+        max-width: 400px;
+      }
+      #toolbar button { margin: 4px 2px; padding: 6px 12px; cursor: pointer; }
+      #toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+      #status { margin-top: 8px; padding: 8px; background: #f0f0f0; border-radius: 4px; font-size: 12px; display: none; }
+      #status.active { display: block; }
+      #current-trip { margin-top: 8px; padding: 8px; background: #fffacd; border-radius: 4px; font-size: 13px; font-weight: bold; display: none; border: 2px solid #ffd700; }
+      #current-trip.active { display: block; }
+      .progress-bar { width: 100%; height: 20px; background: #e0e0e0; border-radius: 3px; overflow: hidden; margin: 4px 0; }
+      .progress-fill { height: 100%; background: #4CAF50; transition: width 0.3s; }
+      .graph-edge { stroke-width: 2; stroke-opacity: 0.4; }
+      .trip-shape { stroke-width: 3; stroke-opacity: 0.6; }
+      .current-trip-shape { stroke-width: 5; stroke-opacity: 0.95; }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <div>
+        <button id="btn-graph-view">Build Graphs (Live View)</button>
+        <button id="btn-shapes-view">View Shapes</button>
+      </div>
+      <div id="shapes-controls" style="display:none;">
+        <label><input type="checkbox" id="toggle-stops" checked> Show stops</label>
+        <select id="shape-select"></select>
+      </div>
+      <div id="current-trip"></div>
+      <div id="status"></div>
+    </div>
+    <div id="map"></div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+      const map = L.map('map').setView([41.90, 12.5], 9);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+      }).addTo(map);
+      
+      // Handle zoom events to warn about data loss on refresh
+      let hasBuiltData = false;
+      map.on('zoomend', () => {
+        // Lines are rendered properly at all zoom levels with fixed pixel widths
+      });
+      
+      // Warn before page unload if data exists
+      window.addEventListener('beforeunload', (e) => {
+        if (hasBuiltData && currentMode === 'graph' && allTripShapes.length > 0) {
+          e.preventDefault();
+          e.returnValue = 'You have built trip data that will be lost on refresh. Continue?';
+          return e.returnValue;
+        }
+      });
+
+      const layers = { 
+        shapes: L.layerGroup(),
+        stops: L.layerGroup(),
+        graphRoads: L.layerGroup(),
+        graphRails: L.layerGroup(),
+        tripShapes: L.layerGroup(),
+        currentTrip: L.layerGroup()  // Highlighted current trip
+      };
+      
+      const shapeSelect = document.getElementById('shape-select');
+      const statusDiv = document.getElementById('status');
+      const currentTripDiv = document.getElementById('current-trip');
+      const btnGraphView = document.getElementById('btn-graph-view');
+      const btnShapesView = document.getElementById('btn-shapes-view');
+      const shapesControls = document.getElementById('shapes-controls');
+
+      let currentMode = 'shapes'; // 'shapes' or 'graph'
+      let eventSource = null;
+      let allGraphEdges = []; // Store edges for redraw on zoom
+      let allTripShapes = []; // Store trip shapes for persistence
+
+      function switchToGraphMode() {
+        currentMode = 'graph';
+        
+        // Clear and setup layers
+        map.eachLayer(layer => {
+          if (layer !== map._layers[Object.keys(map._layers)[0]]) { // Keep base tile layer
+            map.removeLayer(layer);
+          }
+        });
+        layers.shapes.clearLayers();
+        layers.stops.clearLayers();
+        layers.graphRoads.clearLayers();
+        layers.graphRails.clearLayers();
+        layers.tripShapes.clearLayers();
+        layers.currentTrip.clearLayers();
+        
+        allGraphEdges = [];
+        allTripShapes = [];
+        
+        layers.graphRoads.addTo(map);
+        layers.graphRails.addTo(map);
+        layers.tripShapes.addTo(map);
+        layers.currentTrip.addTo(map); // Highlighted layer on top
+        
+        shapesControls.style.display = 'none';
+        statusDiv.classList.add('active');
+        currentTripDiv.classList.remove('active');
+        statusDiv.innerHTML = '<div>Initializing graph build...</div>';
+        
+        btnGraphView.disabled = true;
+        btnShapesView.disabled = true;
+      }
+
+      function switchToShapesMode() {
+        currentMode = 'shapes';
+        
+        // Clear graph layers
+        layers.graphRoads.clearLayers();
+        layers.graphRails.clearLayers();
+        layers.tripShapes.clearLayers();
+        layers.currentTrip.clearLayers();
+        map.removeLayer(layers.graphRoads);
+        map.removeLayer(layers.graphRails);
+        map.removeLayer(layers.tripShapes);
+        map.removeLayer(layers.currentTrip);
+        
+        allGraphEdges = [];
+        allTripShapes = [];
+        
+        // Show shapes layers
+        layers.shapes.addTo(map);
+        layers.stops.addTo(map);
+        
+        shapesControls.style.display = 'block';
+        statusDiv.classList.remove('active');
+        currentTripDiv.classList.remove('active');
+        
+        btnGraphView.disabled = false;
+        btnShapesView.disabled = false;
+        
+        // Load shapes if not already loaded
+        if (layers.shapes.getLayers().length === 0) {
+          loadShapes();
+          loadStops();
+        }
+      }
+
+      function startGraphBuilding() {
+        switchToGraphMode();
+        
+        // Start SSE connection
+        eventSource = new EventSource('/graph-events');
+        
+        let edgeCount = { lazio_road: 0, lazio_rail: 0, italy_rail: 0 };
+        let graphColors = { road: '#FF6B35', rail: '#004E89' };
+        
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          
+          switch(data.type) {
+            case 'ping':
+              // Keepalive
+              break;
+              
+            case 'info':
+              statusDiv.innerHTML = `<div><strong>${data.message}</strong></div>`;
+              if (data.bbox) {
+                const [minlon, minlat, maxlon, maxlat] = data.bbox;
+                map.fitBounds([[minlat, minlon], [maxlat, maxlon]], { padding: [50, 50] });
+              }
+              break;
+              
+            case 'progress':
+              statusDiv.innerHTML = `<div><strong>${data.message}</strong></div>`;
+              break;
+              
+            case 'edge':
+              // Store edge data
+              allGraphEdges.push(data);
+              
+              // Add edge to map with fixed stroke-width
+              const color = graphColors[data.mode] || '#666';
+              const layer = data.mode === 'road' ? layers.graphRoads : layers.graphRails;
+              const line = L.polyline([[data.lat1, data.lon1], [data.lat2, data.lon2]], {
+                color: color,
+                weight: 2,
+                opacity: 0.4,
+                className: 'graph-edge',
+                // Ensure rendering at all zoom levels
+                pane: 'overlayPane'
+              });
+              line.addTo(layer);
+              
+              hasBuiltData = true;
+              
+              // Update count
+              const key = `${data.region}_${data.mode}`;
+              edgeCount[key] = data.count;
+              
+              // Update status periodically
+              if (data.count % 100 === 0) {
+                const statusText = Object.entries(edgeCount)
+                  .filter(([k, v]) => v > 0)
+                  .map(([k, v]) => `${k}: ${v} edges`)
+                  .join(' | ');
+                statusDiv.innerHTML = `<div><strong>Building graphs...</strong><br>${statusText}</div>`;
+              }
+              break;
+              
+            case 'graph_complete':
+              statusDiv.innerHTML += `<div>✓ ${data.region} ${data.mode}: ${data.nodes} nodes, ${data.edges} edges</div>`;
+              break;
+              
+            case 'phase_complete':
+              if (data.phase === 'graphs') {
+                statusDiv.innerHTML += `<div><strong>✓ ${data.message}</strong></div>`;
+                currentTripDiv.classList.add('active');
+                // Clear graph edges to reduce clutter, keep data for potential redraw
+                setTimeout(() => {
+                  layers.graphRoads.clearLayers();
+                  layers.graphRails.clearLayers();
+                }, 500);
+              } else if (data.phase === 'trips') {
+                statusDiv.innerHTML += `<div><strong>✓ ${data.message}</strong></div>`;
+                currentTripDiv.classList.remove('active');
+              }
+              break;
+              
+            case 'trip_segment':
+              // Real-time segment building - update current trip polyline
+              if (!window.currentTripData) {
+                window.currentTripData = {
+                  trip_id: data.trip_id,
+                  mode: data.mode,
+                  coords: []
+                };
+                layers.currentTrip.clearLayers();
+              }
+              
+              // Append new segment to current trip
+              window.currentTripData.coords.push(...data.segment_coords);
+              
+              // Redraw current trip polyline with all accumulated segments
+              layers.currentTrip.clearLayers();
+              const tripColor = data.mode === 'road' ? '#FF6B35' : '#004E89';
+              const currentLine = L.polyline(window.currentTripData.coords.map(p => [p[0], p[1]]), {
+                color: tripColor,
+                weight: 5,
+                opacity: 0.95,
+                className: 'current-trip-shape'
+              });
+              currentLine.addTo(layers.currentTrip);
+              
+              // Update status
+              const progress = Math.round((data.segment_index + 1) / data.total_segments * 100);
+              currentTripDiv.innerHTML = `
+                🚌 Building: <strong>${data.trip_id}</strong> (${data.mode})<br>
+                Segment ${data.segment_index + 1}/${data.total_segments} (${progress}%) - ${data.cumulative_points} points
+                <div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>
+              `;
+              break;
+              
+            case 'trip_shape':
+              // Trip completed - store and move to historical
+              if (window.currentTripData) {
+                allTripShapes.push({
+                  trip_id: window.currentTripData.trip_id,
+                  mode: window.currentTripData.mode,
+                  coords: window.currentTripData.coords
+                });
+                
+                // Move to historical layer
+                const tripColor = window.currentTripData.mode === 'road' ? '#FF6B35' : '#004E89';
+                const prevLine = L.polyline(window.currentTripData.coords.map(p => [p[0], p[1]]), {
+                  color: tripColor,
+                  weight: 2,
+                  opacity: 0.3,
+                  className: 'trip-shape'
+                });
+                prevLine.bindPopup(`<b>Trip:</b> ${window.currentTripData.trip_id}<br><b>Mode:</b> ${window.currentTripData.mode}`);
+                prevLine.addTo(layers.tripShapes);
+                
+                // Clear for next trip
+                window.currentTripData = null;
+                layers.currentTrip.clearLayers();
+              }
+              break;
+              
+            case 'complete':
+              statusDiv.innerHTML += `<div><strong>✓ ${data.message}</strong></div>`;
+              setTimeout(() => {
+                statusDiv.innerHTML += `<div>Switching to shapes view...</div>`;
+                setTimeout(() => {
+                  eventSource.close();
+                  switchToShapesMode();
+                }, 2000);
+              }, 2000);
+              break;
+              
+            case 'error':
+              statusDiv.innerHTML += `<div style="color:red;"><strong>Error:</strong> ${data.message}</div>`;
+              btnGraphView.disabled = false;
+              btnShapesView.disabled = false;
+              break;
+          }
+        };
+        
+        eventSource.onerror = (err) => {
+          console.error('SSE error:', err);
+          eventSource.close();
+          statusDiv.innerHTML += `<div style="color:red;">Connection lost</div>`;
+          btnGraphView.disabled = false;
+          btnShapesView.disabled = false;
+        };
+        
+        // Trigger build on server
+        fetch('/start-graph-build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            osm_pbf: 'lazio.osm.pbf'
+          })
+        }).then(r => r.json())
+          .then(data => {
+            if (data.error) {
+              statusDiv.innerHTML = `<div style="color:red;">${data.error}</div>`;
+              btnGraphView.disabled = false;
+              btnShapesView.disabled = false;
+            }
+          })
+          .catch(err => {
+            statusDiv.innerHTML = `<div style="color:red;">Failed to start: ${err}</div>`;
+            btnGraphView.disabled = false;
+            btnShapesView.disabled = false;
+          });
+      }
+
+      async function loadShapes() {
+        const res = await fetch('/shapes');
+        const data = await res.json();
+        shapeSelect.innerHTML = '<option value="">All shapes</option>';
+        layers.shapes.clearLayers();
+        data.forEach((s, idx) => {
+          const poly = L.polyline(s.coords, { color: '#0066cc', weight: 3, opacity: 0.8 });
+          poly.bindPopup(`<b>${s.shape_id}</b>`);
+          poly.addTo(layers.shapes);
+          const opt = document.createElement('option');
+          opt.value = s.shape_id; opt.textContent = s.shape_id; shapeSelect.appendChild(opt);
+        });
+        if (data.length) {
+          map.fitBounds(layers.shapes.getBounds(), { padding: [20, 20] });
+        }
+      }
+
+      async function loadStops() {
+        const res = await fetch('/stops');
+        const data = await res.json();
+        layers.stops.clearLayers();
+        data.forEach(st => {
+          const m = L.circleMarker([st.lat, st.lon], { radius: 3, color: '#e24', weight: 1 });
+          m.bindTooltip(`${st.name}`);
+          m.addTo(layers.stops);
+        });
+      }
+
+      shapeSelect.addEventListener('change', () => {
+        const val = shapeSelect.value;
+        layers.shapes.eachLayer(l => {
+          const id = (l.getPopup()?.getContent() || '').replace(/<[^>]*>/g, '');
+          if (!val || id === val) l.setStyle({ opacity: 0.9, weight: 4 });
+          else l.setStyle({ opacity: 0.15, weight: 2 });
+        });
+      });
+
+      document.getElementById('toggle-stops').addEventListener('change', (e) => {
+        if (e.target.checked) map.addLayer(layers.stops); else map.removeLayer(layers.stops);
+      });
+
+      btnGraphView.addEventListener('click', startGraphBuilding);
+      btnShapesView.addEventListener('click', switchToShapesMode);
+
+      // Start in shapes mode
+      switchToShapesMode();
+    </script>
+  </body>
+</html>
