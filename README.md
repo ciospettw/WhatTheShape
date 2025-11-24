@@ -97,7 +97,16 @@ This will open a web browser at `http://127.0.0.1:1890`. Click "Build Graphs (Li
     -   Building graphs from large PBFs can take time and memory (RAM), and may as well cause CPU strain.
     -   Processing thousands of trips can take a while, especially if they are road ones. Use `--max-trips` to test on a subset first.
 
-4.  **Route Mode Inference**: The script guesses if a route is bus or rail based on `route_type` and name keywords. If your GTFS has unusual `route_type` values, you might need to adjust the `route_mode` function in the script or edit your GTFS to use standard values for `route_type` in trips.txt (E.G. 2= Rail, 3=Bus)
+4.  **Route Mode Inference**: The script uses a "smart" heuristic to determine if a route is **Road** (Bus) or **Rail** (Train/Tram/Subway).
+    *   **Priority 1: Keywords**: It checks `route_id`, `route_short_name`, and `route_long_name` for keywords.
+        *   *Road keywords*: "bus", "autobus", "pullman"
+        *   *Rail keywords*: "rail", "train", "metro", "subway", "tram", "ferrovia", "metropolitana"
+    *   **Priority 2: GTFS `route_type`**: If no keywords are found, it falls back to the standard GTFS `route_type` field.
+        *   `3` = **Road** (Bus)
+        *   `0` (Tram), `1` (Subway), `2` (Rail) = **Rail**
+    *   **Default**: If neither matches, it defaults to **Road**.
+
+    *If your GTFS uses non-standard `route_type` values (e.g. extended types like 700 for bus) or lacks clear names, you may need to edit the `route_mode` function in `main.py`.*
 
 ## Troubleshooting
 
