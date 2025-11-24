@@ -106,6 +106,8 @@ This will open a web browser at `http://127.0.0.1:1890`. Click "Build Graphs (Li
         *   `0` (Tram), `1` (Subway), `2` (Rail) = **Rail**
     *   **Default**: If neither matches, it defaults to **Road**.
 
+    You can edit keywords to your liking in the `route_mode` function.
+
     *If your GTFS uses non-standard `route_type` values (e.g. extended types like 700 for bus) or lacks clear names, you may need to edit the `route_mode` function in `main.py`.*
 
 ## Troubleshooting
