@@ -1,14 +1,17 @@
 # GTFS Shapes Fixer
 
-This tool rebuilds `shapes.txt` for a GTFS feed by map-matching trip stops to OpenStreetMap (OSM) data. It supports both road (bus) and rail (train, tram, subway) networks.
+This tool rebuilds `shapes.txt` for a GTFS feed by map-matching trip stops to OpenStreetMap (OSM) data. It supports both road (bus) and rail (mainline train) networks.
 
 ## Features
 
 -   **Automatic Mode Detection**: Infers whether a route is "road" or "rail" based on `route_type` and keywords in route names.
--   **Hybrid Graph Building**: Builds separate routing graphs for road and rail networks from a single OSM PBF file.
--   **Map Matching**: Uses a Hidden Markov Model (HMM) approach (via `networkx` shortest paths between candidates) to find the most likely path through the street/rail network. This guarantees the shapes will find a way to get stop-to-stop, but the real shape can obviously vary if that trip actually takes a path between stops which is not the shortest.
+-   **Hybrid Graph Building**: Builds separate routing graphs for road and rail networks from one or more OSM PBF files (rail now restricted to `rail` + ferry links; no tram/metro/light_rail/monorail).
+-   **Rail Stop Normalizer**: Optionally snaps rail GTFS stops to nearby OSM rail stops before shape generation to fix bad coordinates.
+-   **Rail speed bias**: Uses OSM `maxspeed` to prefer tracks coerent with train class (AV, IC/EC, REG, etc.).
+-   **Anti-detour & multi-candidate snapping**: For each stop pair, tries multiple nearby rail nodes, avoids huge detours, rejects unrealistically sharp turns.
+-   **Ferry bridging**: Includes `route=ferry` segments in the rail graph to span sea gaps (es. Stretto di Messina).
 -   **Shape Simplification**: Simplifies the resulting polylines to reduce file size while maintaining accuracy.
--   **Deduplication**: Assigns shared `shape_id`s to trips with identical geometries to keep `shapes.txt` compact.
+-   **Deduplication & reuse**: Assigns shared `shape_id`s to trips with identical geometries and skips recomputation when the stop sequence repeats.
 -   **Visualizer**: Includes a web-based viewer to watch the graph building and shape generation process in real-time.
 
 ## Prerequisites
@@ -42,6 +45,12 @@ To rebuild shapes for a GTFS feed using an OSM PBF file:
 python main.py --gtfs /path/to/gtfs_dir --osm /path/to/region.osm.pbf
 ```
 
+You can also pass multiple PBFs (they are merged while building the graphs):
+
+```bash
+python main.py --gtfs /path/to/gtfs_dir --osm /path/to/region.osm.pbf /path/to/extra.osm.pbf
+```
+
 This will:
 1.  Load the GTFS data.
 2.  Compute the bounding box of all stops.
@@ -56,13 +65,17 @@ This will:
 | Argument | Description | Default |
 | :--- | :--- | :--- |
 | `--gtfs` | Path to the unpacked GTFS directory. | `trgtfs` |
-| `--osm` | Path to the OSM PBF file. | `lazio.osm.pbf` |
+| `--osm` | Path(s) to one or more OSM PBF files. | `lazio.osm.pbf` |
 | `--modes` | Which graphs to build: `road`, `rail`, or `both`. | `both` |
 | `--dry-run` | Run without writing changes to disk. | `False` |
 | `--max-trips` | Limit the number of trips to process (for testing). | `None` |
 | `--tolerance-road` | Simplification tolerance (meters) for road shapes. | `5.0` |
 | `--tolerance-rail` | Simplification tolerance (meters) for rail shapes. | `3.0` |
 | `--with-viewer` | Launch the web visualizer. | `False` |
+| `--load-graphs` | Load a previously saved road/rail graph cache instead of rebuilding. | `None` |
+| `--save-graphs` | Save the built road/rail graphs for future runs. | `None` |
+| `--normalize-rail-stops` | Snap rail GTFS stops to nearby OSM rail stops before building shapes. | `False` |
+| `--normalize-rail-threshold` | Max distance in meters to move a rail stop when normalizing. | `600.0` |
 
 ### Selective Graph Building
 
@@ -82,6 +95,18 @@ To watch the process in real-time:
 python main.py --with-viewer
 ```
 
+### Reusing built graphs
+
+If you already built the road/rail graphs once, you can reuse them to skip parsing the PBF:
+
+```bash
+python main.py --gtfs ./my_gtfs --osm ./italy.osm.pbf --modes rail --save-graphs ./rail_graphs.gpickle
+# Later
+python main.py --gtfs ./my_gtfs --osm ./italy.osm.pbf --modes rail --load-graphs ./rail_graphs.gpickle
+```
+
+The cache stores road and rail graphs together; loading automatically pulls only the modes you request.
+
 This will open a web browser at `http://127.0.0.1:1890`. Click "Build Graphs (Live View)" to start.
 
 **Note**: The visualizer is a basic tool for debugging and watching progress. It is not highly optimized and may struggle with very large datasets. It is "not one of the bests", but it gets the job done for monitoring.
@@ -93,11 +118,15 @@ This will open a web browser at `http://127.0.0.1:1890`. Click "Build Graphs (Li
 
 2.  **Graph Connectivity**: The script assumes the OSM network is connected. If stops are far from any road/rail (e.g., bad stop coordinates or missing OSM data), the map matching may fail or produce straight lines between those stops.
 
-3.  **Performance**:
+3.  **Rail scope**: The rail graph now keeps only `rail` (mainline) and `route=ferry` links; tram/metro/light_rail/monorail are excluded to avoid wrong routings.
+
+4.  **Rebuilding cache**: If you use a saved graph cache, rebuild it after updates that add attributes (e.g., `maxspeed`, ferry inclusion) to benefit from new routing bias.
+
+5.  **Performance**:
     -   Building graphs from large PBFs can take time and memory (RAM), and may as well cause CPU strain.
     -   Processing thousands of trips can take a while, especially if they are road ones. Use `--max-trips` to test on a subset first.
 
-4.  **Route Mode Inference**: The script uses a "smart" heuristic to determine if a route is **Road** (Bus) or **Rail** (Train/Tram/Subway).
+6.  **Route Mode Inference**: The script uses a "smart" heuristic to determine if a route is **Road** (Bus) or **Rail** (Train/Tram/Subway).
     *   **Priority 1: Keywords**: It checks `route_id`, `route_short_name`, and `route_long_name` for keywords.
         *   *Road keywords*: "bus", "autobus", "pullman"
         *   *Rail keywords*: "rail", "train", "metro", "subway", "tram", "ferrovia", "metropolitana"

@@ -7,7 +7,8 @@ import threading
 
 app = Flask(__name__)
 
-GTFS_DIR = os.path.join(os.path.dirname(__file__), 'trgtfs')
+# Allow overriding GTFS path via env (e.g. WHATTHESHAPE_GTFS=C:\\path\\to\\gtfs)
+GTFS_DIR = os.environ.get('WHATTHESHAPE_GTFS', os.path.join(os.path.dirname(__file__), 'trgtfs'))
 
 # Global queue for streaming graph building events
 graph_event_queue = queue.Queue()
